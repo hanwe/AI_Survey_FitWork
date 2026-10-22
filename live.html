@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>FitWork 語音回饋</title>
+  <style>
+    :root {
+      --bg: #f4f7f6; --card: #ffffff; --text: #14211f; --muted: #5b6b68; --line: #dfe7e5;
+      --brand: #0f766e; --brand-ink: #ffffff; --brand-soft: #e3f2ef;
+      --ai: #ffffff; --user: #0f766e; --user-ink: #ffffff;
+      --warn: #b45309; --warn-soft: #fef3e2; --danger: #b91c1c;
+      --shadow: 0 1px 2px rgba(20, 33, 31, .06), 0 8px 24px rgba(20, 33, 31, .06);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1413; --card: #16201f; --text: #e6efed; --muted: #9db0ac; --line: #26332f;
+        --brand: #2dd4bf; --brand-ink: #062a26; --brand-soft: #123b36;
+        --ai: #16201f; --user: #1f5f58; --user-ink: #e6efed;
+        --warn: #fbbf24; --warn-soft: #3a2a0c; --danger: #f87171; --shadow: none;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      font-size: 17px; line-height: 1.55; -webkit-text-size-adjust: 100%;
+    }
+    main { max-width: 560px; margin: 0 auto; padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+    h1 { font-size: 22px; line-height: 1.35; margin: 8px 0; }
+    p { margin: 0 0 12px; }
+    .muted { color: var(--muted); font-size: 15px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; box-shadow: var(--shadow); margin-bottom: 14px; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; }
+    input[type=text] { width: 100%; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+    input[type=text]:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+    button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 12px; padding: 13px 18px; font-weight: 600; background: var(--brand); color: var(--brand-ink); min-height: 48px; }
+    .btn.block { width: 100%; }
+    .btn.ghost { background: transparent; color: var(--brand); border: 1px solid var(--line); }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .error { color: var(--danger); font-size: 15px; margin-top: 8px; min-height: 1em; }
+    .tips { margin: 0; padding-left: 20px; color: var(--muted); font-size: 15px; }
+    .tips li { margin: 2px 0; }
+    .switch { display: block; text-align: center; margin-top: 14px; font-size: 15px; color: var(--muted); }
+    .switch a { color: var(--brand); }
+
+    /* talk */
+    #screen-talk:not([hidden]) { display: flex; flex-direction: column; min-height: calc(100dvh - 16px); }
+    .top {
+      position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px;
+      margin: -16px -16px 12px; padding: 12px 16px; background: var(--bg); font-size: 14px; color: var(--muted);
+    }
+    .progress { flex: 1; height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
+    .link { background: none; border: 0; padding: 4px 0; color: var(--brand); font-size: 14px; white-space: nowrap; }
+    .progress > div { height: 100%; width: 0; background: var(--brand); transition: width .3s ease; }
+    .chat { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
+    .bubble { max-width: 86%; padding: 10px 14px; border-radius: 18px; font-size: 17px; word-break: break-word; }
+    .bubble.ai { align-self: flex-start; background: var(--ai); border: 1px solid var(--line); border-bottom-left-radius: 6px; box-shadow: var(--shadow); }
+    .bubble.user { align-self: flex-end; background: var(--user); color: var(--user-ink); border-bottom-right-radius: 6px; }
+    .saved { align-self: flex-start; display: flex; gap: 8px; align-items: baseline; font-size: 14px; background: var(--brand-soft); border-radius: 10px; padding: 6px 10px; }
+    .tag { font-size: 12px; color: var(--warn); background: var(--warn-soft); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+    .notice { align-self: center; font-size: 14px; color: var(--muted); text-align: center; }
+
+    .dock {
+      position: sticky; bottom: 0; z-index: 2;
+      margin: auto -16px calc(-24px - env(safe-area-inset-bottom));
+      display: flex; align-items: center; gap: 14px;
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      background: var(--card); border-top: 1px solid var(--line);
+    }
+    .mic {
+      flex: none; width: 64px; height: 64px; border-radius: 50%; border: 0;
+      background: var(--brand); color: var(--brand-ink); display: grid; place-items: center;
+      transition: box-shadow .08s linear; --level: 0;
+    }
+    .mic svg { width: 30px; height: 30px; }
+    .mic.on { box-shadow: 0 0 0 calc(4px + var(--level) * 16px) rgba(45, 212, 191, .3); }
+    .mic.ai { box-shadow: 0 0 0 4px rgba(45, 212, 191, .3); animation: speak 1s ease-in-out infinite; }
+    .mic.muted { background: var(--muted); }
+    .mic.muted .on-icon, .mic:not(.muted) .off-icon { display: none; }
+    @keyframes speak { 50% { box-shadow: 0 0 0 14px rgba(45, 212, 191, .12); } }
+    .status { flex: 1; font-size: 16px; color: var(--muted); }
+    .status.warn { color: var(--warn); }
+
+    /* review */
+    .review { list-style: none; padding: 0; margin: 0; }
+    .review li { padding: 11px 0; border-top: 1px solid var(--line); }
+    .review li:first-child { border-top: 0; }
+    .review .q { font-size: 14px; color: var(--muted); }
+    .review .v { font-weight: 600; word-break: break-word; }
+    .done { text-align: center; padding: 28px 18px; }
+    .done .big { font-size: 48px; }
+  </style>
+</head>
+<body>
+<main>
+  <!-- 1. start -->
+  <section id="screen-start">
+    <h1 id="title">FitWork APP 使用滿意度與回饋調查</h1>
+    <p class="muted" id="intro"></p>
+    <div class="card">
+      <label for="emp">工號</label>
+      <input id="emp" type="text" autocomplete="off" autocapitalize="characters" placeholder="請輸入工號">
+      <ul class="tips" style="margin:12px 0 14px">
+        <li>AI 會用聲音跟你聊，像講電話一樣直接回答就好，也可以隨時插話。</li>
+        <li>請允許使用麥克風。建議在安靜的地方，或戴上耳機。</li>
+        <li>錄音只用來辨識你的回答，不會保存。</li>
+      </ul>
+      <button id="btn-start" class="btn block" disabled>載入中…</button>
+      <div class="error" id="start-error"></div>
+    </div>
+    <p class="switch">不方便講話？<a href="index.html">改用一題一題的版本</a></p>
+  </section>
+
+  <!-- 2. conversation -->
+  <section id="screen-talk" hidden>
+    <div class="top">
+      <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
+      <button id="progress-text" class="link" type="button"></button>
+    </div>
+    <div id="chat" class="chat" aria-live="polite"></div>
+    <div class="dock">
+      <button id="mic" class="mic" aria-label="麥克風開關">
+        <svg class="on-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+        <svg class="off-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 11h-2c0 .74-.16 1.43-.44 2.05l1.47 1.47A6.96 6.96 0 0 0 19 11Zm-4 .17V5a3 3 0 0 0-5.9-.76L15 10.17v1Zm-11.73-8.9L2 3.55l7 7V11a3 3 0 0 0 4.46 2.62l1.5 1.5A5 5 0 0 1 7 11H5a7 7 0 0 0 6 6.92V21h2v-3.08a6.9 6.9 0 0 0 3.42-1.42L20.45 21l1.27-1.27Z"/></svg>
+      </button>
+      <div id="status" class="status" role="status">連線中…</div>
+      <button id="btn-reconnect" class="btn" type="button" hidden>重新連線</button>
+    </div>
+  </section>
+
+  <!-- 3. review -->
+  <section id="screen-review" hidden>
+    <h1>確認你的回答</h1>
+    <p class="muted">要修改的話，直接跟 AI 說就可以，例如「速度改成普通」。</p>
+    <div class="card"><ul id="review" class="review"></ul></div>
+    <button id="btn-submit" class="btn block">送出問卷</button>
+    <button id="btn-back" class="btn ghost block" style="margin-top:8px">回到對話</button>
+    <div class="error" id="submit-error"></div>
+  </section>
+
+  <!-- 4. done -->
+  <section id="screen-done" hidden>
+    <div class="card done">
+      <div class="big">🙏</div>
+      <h1>謝謝你的回饋！</h1>
+      <p class="muted">回覆編號：<span id="done-id"></span></p>
+    </div>
+  </section>
+</main>
+
+<script src="config.js"></script>
+<script src="engine.js"></script>
+<script src="live.js"></script>
+</body>
+</html>
