@@ -7,6 +7,10 @@
 const MUTE_MIC_WHILE_AI_SPEAKS = false;
 const MAX_RECONNECTS = 3;
 
+// Cost protection: microphone audio streamed to Gemini uses tokens, even silence.
+const IDLE_PAUSE_MS = 60 * 1000;          // nobody talks for 1 minute → pause the microphone
+const MAX_CONVERSATION_MS = 10 * 60 * 1000; // a conversation is closed after 10 minutes
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -25,6 +29,9 @@ const state = {
   reconnects: 0,
   moveSoon: false,  // Google asked us to move to a new connection
   wakeLock: null,
+  lastActivity: 0,  // last time someone spoke (user or AI)
+  convStart: 0,     // when the current conversation started
+  watchdog: null,
   ended: false,
   muted: false,
   aiSpeaking: false,
@@ -89,8 +96,10 @@ async function startMic() {
     const data = e.inputBuffer.getChannelData(0);
     let sum = 0;
     for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
-    const level = Math.min(1, Math.sqrt(sum / data.length) / 0.12);
+    const rms = Math.sqrt(sum / data.length);
+    const level = Math.min(1, rms / 0.12);
     if (!state.muted) $('mic').style.setProperty('--level', level.toFixed(2));
+    if (rms > 0.03) state.lastActivity = Date.now(); // someone is talking
     if (state.muted || !state.ready || (MUTE_MIC_WHILE_AI_SPEAKS && state.aiSpeaking)) {
       rsPos = 0;
       return;
@@ -199,7 +208,8 @@ function connect(handle) {
   state.ws = ws;
   ws.onopen = () => {
     const setup = JSON.parse(JSON.stringify(state.setup));
-    if (handle) setup.sessionResumption = { handle };
+    // ask Google for resume handles; pass the last one when reconnecting
+    setup.sessionResumption = handle ? { handle } : {};
     ws.send(JSON.stringify({ setup }));
   };
   ws.onmessage = (ev) => {
@@ -220,6 +230,8 @@ function connect(handle) {
       setTimeout(() => { if (!state.ended && state.ws === ws) connect(state.resumeHandle); }, 600);
       return;
     }
+    state.ws = null; // no open connection: the microphone button waits for 「重新連線」
+    stopMic();
     setStatus('連線中斷' + (ev.reason ? '：' + ev.reason : ''), true);
     notice('連線中斷了。已記錄的回答都還在，按「重新連線」可以接著回答。');
     $('btn-reconnect').hidden = false;
@@ -247,6 +259,7 @@ async function restart() {
   btn.disabled = true;
   setStatus('重新連線中…');
   try {
+    if (!mic) await startMic(); // this runs inside the tap, so the browser allows it
     const t = await post('live_token', {});
     state.token = t.token;
     state.wsUrl = t.ws_url;
@@ -255,6 +268,10 @@ async function restart() {
     state.resumed = true;
     state.resumeHandle = null;
     state.reconnects = 0;
+    state.muted = false;
+    state.convStart = Date.now();
+    state.lastActivity = Date.now();
+    startWatchdog();
     connect(null);
   } catch (e) {
     setStatus('無法連線：' + e.message, true);
@@ -262,7 +279,48 @@ async function restart() {
   btn.disabled = false;
 }
 
+// ---------------------------------------------------------------- cost protection
+
+function pauseMic(text) {
+  if (state.muted || state.ended) return;
+  state.muted = true;
+  send({ realtimeInput: { audioStreamEnd: true } });
+  updateStatus();
+  notice(text);
+}
+
+/** Close the conversation without losing answers; 「重新連線」 continues it later. */
+function closeConversation(text) {
+  const ws = state.ws;
+  state.ws = null; // ignore its close event
+  state.ready = false;
+  state.moveSoon = false;
+  try { if (ws) ws.close(); } catch (e) { /* ignore */ }
+  stopPlayback();
+  stopMic(); // switch the microphone off completely (the phone's mic indicator goes away)
+  state.muted = true;
+  updateStatus();
+  setStatus(text, true);
+  notice(text + ' 已記錄的回答都還在，按「重新連線」可以接著回答。');
+  $('btn-reconnect').hidden = false;
+}
+
+function startWatchdog() {
+  clearInterval(state.watchdog);
+  state.watchdog = setInterval(() => {
+    if (state.ended || !state.ws) return;
+    const now = Date.now();
+    if (state.aiSpeaking) state.lastActivity = now;
+    if (now - state.convStart > MAX_CONVERSATION_MS) {
+      closeConversation('對話時間已到，已自動結束連線。');
+    } else if (state.ready && !state.muted && now - state.lastActivity > IDLE_PAUSE_MS) {
+      pauseMic('一段時間沒有聲音，麥克風已暫停。要繼續就點麥克風。');
+    }
+  }, 2000);
+}
+
 function onServer(msg) {
+  if (msg.serverContent || msg.toolCall) state.lastActivity = Date.now();
   if (msg.setupComplete) {
     state.ready = true;
     state.reconnects = 0;
@@ -549,8 +607,10 @@ async function submit() {
   }
 }
 
+/** After submitting: close the connection and the microphone, so no more tokens are used. */
 function endSession() {
   state.ended = true;
+  clearInterval(state.watchdog);
   stopMic();
   stopPlayback();
   if (state.ws) { try { state.ws.close(); } catch (e) { /* ignore */ } }
@@ -620,6 +680,9 @@ async function start() {
   show('talk');
   progress();
   setStatus('連線中…');
+  state.convStart = Date.now();
+  state.lastActivity = Date.now();
+  startWatchdog();
   connect(null);
 }
 
@@ -630,11 +693,20 @@ async function init() {
   $('progress-text').onclick = showReview;
   $('btn-reconnect').onclick = restart;
   $('mic').onclick = () => {
-    if (!state.started || state.ended) return;
+    if (!state.started || state.ended || !state.ws) return;
     state.muted = !state.muted;
     if (state.muted) send({ realtimeInput: { audioStreamEnd: true } });
+    else state.lastActivity = Date.now();
     updateStatus();
   };
+  // switched to another app or tab: stop sending audio right away
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && state.started && !state.ended) pauseMic('離開畫面時麥克風已暫停。要繼續就點麥克風。');
+  });
+  // page closed or reloaded: close the connection
+  window.addEventListener('pagehide', () => {
+    if (state.started && !state.ended) endSession();
+  });
 
   if (BACKEND_URL.indexOf('PASTE_') === 0) {
     $('start-error').textContent = '尚未設定後端網址：請在 config.js 填入 Apps Script 網址。';
